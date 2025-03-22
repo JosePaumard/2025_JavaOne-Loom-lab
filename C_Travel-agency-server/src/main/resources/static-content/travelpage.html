@@ -78,14 +78,14 @@
                                 tr.append(td);
                             };
                             // FIXME: Displaying travels
-                            if (response.travel.travel.from) {
-                                addTableData(response.travel.travel.from.name);
+                            if (response.travel.simpleFlight) {
+                                addTableData(response.travel.simpleFlight.from.name);
                                 addTableData("-");
-                                addTableData(response.travel.travel.to.name);
+                                addTableData(response.travel.simpleFlight.to.name);
                             } else {
-                                addTableData(response.travel.travel.flight1.from.name);
-                                addTableData(response.travel.travel.flight1.to.name);
-                                addTableData(response.travel.travel.flight2.to.name);
+                                addTableData(response.travel.multilegFlight.flight1.from.name);
+                                addTableData(response.travel.multilegFlight.flight1.to.name);
+                                addTableData(response.travel.multilegFlight.flight2.to.name);
                             }
                             addTableData(response.travel.price);
                             addTableData(response.travel.company.name);

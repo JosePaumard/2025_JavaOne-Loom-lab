@@ -10,24 +10,22 @@ import io.helidon.webclient.api.ClientUri;
 import io.helidon.webclient.api.WebClient;
 import io.helidon.webserver.WebServer;
 import io.helidon.webserver.http.HttpRouting;
+import io.helidon.webserver.http.ServerRequest;
 import io.helidon.webserver.staticcontent.StaticContentFeature;
-import jakarta.json.Json;
 import org.paumard.server.travel.model.city.Cities;
+import org.paumard.server.travel.model.city.City;
 import org.paumard.server.travel.model.company.Companies;
 import org.paumard.server.travel.model.company.Company;
 import org.paumard.server.travel.model.company.exception.CompanyErrorMessage;
-import org.paumard.server.travel.model.dto.CompanyPricedTravelDTO;
 import org.paumard.server.travel.model.dto.PricedTravelNoWeatherDTO;
 import org.paumard.server.travel.model.dto.PricedTravelWithWeatherDTO;
-import org.paumard.server.travel.model.dto.TravelRequestDTO;
-import org.paumard.server.travel.model.flight.priced.PricedFlight;
-import org.paumard.server.travel.model.flight.priced.PricedMultiLegFlight;
-import org.paumard.server.travel.model.flight.travel.Flight;
-import org.paumard.server.travel.model.flight.travel.MultilegFlight;
+import org.paumard.server.travel.model.flight.Flight;
 import org.paumard.server.travel.model.weather.Weather;
 import org.paumard.server.travel.model.weather.WeatherAgencies;
 import org.paumard.server.travel.model.weather.WeatherAgency;
 import org.paumard.server.travel.model.weather.exception.WeatherErrorMessage;
+import org.paumard.server.travel.response.CompanyResponse;
+import org.paumard.server.travel.response.CompanyServerResponse;
 
 import java.io.IOException;
 import java.net.InetAddress;
@@ -37,8 +35,47 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Properties;
+import java.util.concurrent.Callable;
 
 public class TravelAgencyServer {
+
+    public record TravelRequest(String from, String to) {}
+    public record QueryFlight(City from, City to) {}
+
+    private static QueryFlight queriedFlightFrom(ServerRequest request) {
+        var travelRequest = request.content().as(TravelRequest.class);
+        var cityFrom = Cities.byName(travelRequest.from());
+        var destinationCity = Cities.byName(travelRequest.to());
+        var flight = new QueryFlight(cityFrom, destinationCity);
+        return flight;
+    }
+
+    static Callable<CompanyResponse>
+    companyQuery(ClientUri clientURI, Company company, QueryFlight flight) {
+        return () -> {
+            try (var response = WebClient.builder()
+                    .baseUri(clientURI).build()
+                    .post("/company/" + company.tag())
+                    .submit(flight)) {
+
+                var companyServerResponse = CompanyServerResponse.of(response);
+                return switch (companyServerResponse) {
+                    case CompanyServerResponse.SimpleFlight(
+                            Flight.SimpleFlight simpleFlight, int price) ->
+                            new CompanyResponse.PricedSimpleFlight(
+                                    company, simpleFlight, price);
+                    case CompanyServerResponse.MultilegFlight(
+                            Flight.MultilegFlight multiLegFlight, int price) ->
+                            new CompanyResponse.PricedMultilegFlight(
+                                    company, multiLegFlight, price);
+                    case CompanyServerResponse.NoFlight(String message) ->
+                            new CompanyResponse.NoFlight(company, message);
+                    case CompanyServerResponse.Error(String message) ->
+                            new CompanyResponse.Error(company, message);
+                };
+            }
+        };
+    }
 
     void main() throws UnknownHostException {
 
@@ -64,52 +101,23 @@ public class TravelAgencyServer {
         // FIXME: Start of the spaghetti code
         routingBuilder.post("/travel", (req, res) -> {
             // FIXME: Extracting the requested flight
-            var travelRequest = req.content().as(TravelRequestDTO.class);
-            var cityFrom = Cities.byName(travelRequest.from());
-            var destinationCity = Cities.byName(travelRequest.to());
-            var flight = Flight.from(cityFrom).to(destinationCity);
+            var queryFlight = queriedFlightFrom(req);
+            var destinationCity = queryFlight.to();
             var companies = Companies.companies();
-            var companyPricedTravels = new ArrayList<CompanyPricedTravelDTO>();
+            var companyPricedTravels = new ArrayList<CompanyResponse.Priced>();
             var errorCompanies = new ArrayList<Company>();
             // FIXME: Company for loop
             for (var company : companies) {
-                try (var response = WebClient.builder()
-                        .baseUri(COMPANY_SERVER_URI).build()
-                        .post("/company/" + company.tag())
-                        .submit(flight)) {
-                    // FIXME: Company Server Response Analysis
-                    if (response.status() == Status.OK_200) {
-                        var reader = Json.createReader(response.entity().inputStream());
-                        var jsonObject = reader.readObject();
-                        if (jsonObject.containsKey("multilegFlight")) {
-                            var jsonFlight = jsonObject.getJsonObject("multilegFlight");
-                            var from = jsonFlight.getJsonObject("from").getString("name");
-                            var to = jsonFlight.getJsonObject("to").getString("name");
-                            var via = jsonFlight.getJsonObject("via").getString("name");
-                            var price = jsonObject.getInt("price");
-                            var multilegFlight = new MultilegFlight(from, via, to);
-                            var pricedFlight = new PricedMultiLegFlight(multilegFlight, price);
-                            var companyPricedFlight = new CompanyPricedTravelDTO(company, pricedFlight);
-                            companyPricedTravels.add(companyPricedFlight);
-                        } else if (jsonObject.containsKey("flight")) {
-                            var jsonFlight = jsonObject.getJsonObject("flight");
-                            var from = jsonFlight.getJsonObject("from").getString("name");
-                            var to = jsonFlight.getJsonObject("to").getString("name");
-                            var price = jsonObject.getInt("price");
-                            var simpleFlight = new Flight(from, to);
-                            var pricedFlight = new PricedFlight(simpleFlight, price);
-                            var companyPricedFlight = new CompanyPricedTravelDTO(company, pricedFlight);
-                            companyPricedTravels.add(companyPricedFlight);
-                        }
-                    } else {
-                        var message = response.as(String.class);
-                        errorCompanies.add(company);
-                    }
+                var task = companyQuery(COMPANY_SERVER_URI, company, queryFlight);
+                var companyResponse = task.call();
+                switch (companyResponse) {
+                    case CompanyResponse.Priced priced -> companyPricedTravels.add(priced);
+                    case CompanyResponse.Failed _ -> errorCompanies.add(company);
                 }
             }
             // FIXME: best flight
             var bestFlightOpt = companyPricedTravels.stream()
-                    .min(Comparator.comparingInt(CompanyPricedTravelDTO::price));
+                    .min(Comparator.comparingInt(CompanyResponse.Priced::price));
             if (bestFlightOpt.isPresent()) {
                 var bestFlight = bestFlightOpt.orElseThrow();
                 var weathers = new ArrayList<Weather>();
