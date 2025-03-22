@@ -16,16 +16,11 @@ import org.paumard.server.travel.model.city.Cities;
 import org.paumard.server.travel.model.city.City;
 import org.paumard.server.travel.model.company.Companies;
 import org.paumard.server.travel.model.company.Company;
-import org.paumard.server.travel.model.company.exception.CompanyErrorMessage;
-import org.paumard.server.travel.model.dto.PricedTravelNoWeatherDTO;
-import org.paumard.server.travel.model.dto.PricedTravelWithWeatherDTO;
 import org.paumard.server.travel.model.flight.Flight;
 import org.paumard.server.travel.model.weather.Weather;
 import org.paumard.server.travel.model.weather.WeatherAgencies;
 import org.paumard.server.travel.model.weather.WeatherAgency;
-import org.paumard.server.travel.model.weather.exception.WeatherErrorMessage;
-import org.paumard.server.travel.response.CompanyResponse;
-import org.paumard.server.travel.response.CompanyServerResponse;
+import org.paumard.server.travel.response.*;
 
 import java.io.IOException;
 import java.net.InetAddress;
@@ -36,6 +31,7 @@ import java.util.Comparator;
 import java.util.Properties;
 import java.util.concurrent.Callable;
 import java.util.concurrent.StructuredTaskScope;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 public class TravelAgencyServer {
@@ -78,7 +74,7 @@ public class TravelAgencyServer {
         };
     }
 
-    static Callable<Weather>
+    static Callable<WeatherResponse>
     weatherQuery(ClientUri clientURI, WeatherAgency agency, City city) {
         return () -> {
             try (var response = WebClient.builder()
@@ -87,11 +83,107 @@ public class TravelAgencyServer {
                     .submit(city)) {
                 if (response.status() == Status.OK_200) {
                     var weather = response.as(Weather.class);
-                    return weather;
+                    return new WeatherResponse.Weather(agency, weather.weather());
                 } else {
-                    throw new IllegalStateException("No weather from " + agency.name());
+                    return new WeatherResponse.NoWeather(agency);
                 }
             }
+        };
+    }
+
+    static CompanyResponse
+    queryCompanyServer(ClientUri COMPANY_SERVER_URI, QueryFlight queryFlight) {
+        try (var companyScope =
+                     StructuredTaskScope.<CompanyResponse, Void>open(
+                             StructuredTaskScope.Joiner.awaitAll())) {
+            record CompanyTask(Company company, StructuredTaskScope.Subtask<CompanyResponse> task) {}
+
+            var companySubtasks = Companies.companies()
+                    .stream()
+                    .map(company -> new CompanyTask(
+                            company,
+                            companyScope.fork(companyQuery(COMPANY_SERVER_URI, company, queryFlight))))
+                    .toList();
+
+            companyScope.join();
+
+            var map = companySubtasks.stream()
+                    .collect(
+                            Collectors.partitioningBy(
+                                    e -> e.task().state() == StructuredTaskScope.Subtask.State.SUCCESS &&
+                                         e.task().get() instanceof CompanyResponse.Priced
+                            )
+                    );
+
+            var companyPricedTravels =
+                    map.get(true).stream()
+                            .map(CompanyTask::task)
+                            .map(StructuredTaskScope.Subtask::get)
+                            .map(CompanyResponse.Priced.class::cast)
+                            .toList();
+
+            var errorCompanies =
+                    map.get(false).stream()
+                            .map(CompanyTask::company)
+                            .toList();
+            // FIXME: best flight
+            var bestFlightOpt = companyPricedTravels.stream()
+                    .min(Comparator.comparingInt(CompanyResponse.Priced::price));
+            if (bestFlightOpt.isPresent()) {
+                var bestFlight = bestFlightOpt.orElseThrow();
+                return bestFlight;
+            } else {
+                return new CompanyResponse.NoFlightFromAnyCompany("No Flight found");
+            }
+        } catch (InterruptedException e) {
+            return new CompanyResponse.NoFlightFromAnyCompany("Process interrupted: " + e.getMessage());
+        }
+    }
+
+    static WeatherResponse
+    queryWeatherServer(ClientUri WEATHER_SERVER_URI, City destinationCity)
+            throws InterruptedException {
+        try (var weatherScope = StructuredTaskScope.<WeatherResponse, WeatherResponse>open(
+                StructuredTaskScope.Joiner.anySuccessfulResultOrThrow())) {
+
+            var weatherSubtasks = WeatherAgencies.weatherAgencies()
+                    .stream()
+                    .map(weatherAgency ->
+                            weatherScope.fork(
+                                    weatherQuery(WEATHER_SERVER_URI, weatherAgency, destinationCity)))
+                    .toList();
+            var weatherResponse = weatherScope.join();
+            return weatherResponse;
+        }
+    }
+
+    static TravelResponse
+    buildResponse(CompanyResponse companyResponse, WeatherResponse weatherResponse) {
+        return switch (companyResponse) {
+            case CompanyResponse.PricedSimpleFlight(
+                    Company company, Flight.SimpleFlight simpleFlight, int price) ->
+                    switch (weatherResponse) {
+                        case WeatherResponse.Weather(
+                                WeatherAgency agency, String weather) ->
+                                new TravelResponse.SimpleFlightWeather(
+                                        company, simpleFlight, price,
+                                        new Weather(agency.name(), weather));
+                        case WeatherResponse.NoWeather _, WeatherResponse.WeatherTimeout _ ->
+                                new TravelResponse.SimpleFlightNoWeather(
+                                        company, simpleFlight, price);
+                    };
+            case CompanyResponse.PricedMultilegFlight(
+                    Company company, Flight.MultilegFlight multilegFlight, int price) ->
+                    switch (weatherResponse) {
+                        case WeatherResponse.Weather(WeatherAgency agency, String weather) ->
+                                new TravelResponse.MultilegFlightWeather(
+                                        company, multilegFlight, price,
+                                        new Weather(agency.name(), weather));
+                        case WeatherResponse.NoWeather _, WeatherResponse.WeatherTimeout _ ->
+                                new TravelResponse.MultilegFlightNoWeather(
+                                        company, multilegFlight, price);
+                    };
+            case CompanyResponse.Failed error -> new TravelResponse.NoFlight(error.message());
         };
     }
 
@@ -122,72 +214,46 @@ public class TravelAgencyServer {
             var queryFlight = queriedFlightFrom(req);
             var destinationCity = queryFlight.to();
             // FIXME: Company for loop
-            try (var companyScope =
-                         StructuredTaskScope.<CompanyResponse, Void>open(
-                                 StructuredTaskScope.Joiner.awaitAll())) {
-                record CompanyTask(Company company, StructuredTaskScope.Subtask<CompanyResponse> task) {}
+            Predicate<StructuredTaskScope.Subtask<? extends CompanyWeatherResponse>>
+                    subtaskPredicate =
 
-                var companySubtasks = Companies.companies()
-                        .stream()
-                        .map(company -> new CompanyTask(
-                                company,
-                                companyScope.fork(companyQuery(COMPANY_SERVER_URI, company, queryFlight))))
-                        .toList();
+                    subtask -> switch(subtask.state()) {
+                        case SUCCESS -> switch (subtask.get()) {
+                            case CompanyResponse _ -> true; // cancels the scope
+                            case WeatherResponse _ -> false;
+                        };
+                        case FAILED ->
+                                throw new IllegalStateException("Got a subtask in FAILED state");
+                        case UNAVAILABLE ->
+                                throw new IllegalStateException("Got a subtask in UNAVAILABLE state");
+                    };
 
-                companyScope.join();
+            try (var travelScope = StructuredTaskScope.open(
+                    StructuredTaskScope.Joiner.allUntil(subtaskPredicate)
+            )) {
 
-                var map = companySubtasks.stream()
-                        .collect(
-                                Collectors.partitioningBy(
-                                        e -> e.task().state() == StructuredTaskScope.Subtask.State.SUCCESS &&
-                                             e.task().get() instanceof CompanyResponse.Priced
-                                )
-                        );
+                // First submit your tasks as usual
+                var companyResponseSubTask =
+                        travelScope.fork(() -> queryCompanyServer(COMPANY_SERVER_URI, queryFlight));
+                var weatherResponseSubTask =
+                        travelScope.fork(() -> queryWeatherServer(WEATHER_SERVER_URI, destinationCity));
 
-                var companyPricedTravels =
-                        map.get(true).stream()
-                                .map(CompanyTask::task)
-                                .map(StructuredTaskScope.Subtask::get)
-                                .map(CompanyResponse.Priced.class::cast)
-                                .toList();
+                // then call join
+                travelScope.join();
 
-                var errorCompanies =
-                        map.get(false).stream()
-                                .map(CompanyTask::company)
-                                .toList();
-                // FIXME: best flight
-                var bestFlightOpt = companyPricedTravels.stream()
-                        .min(Comparator.comparingInt(CompanyResponse.Priced::price));
-                if (bestFlightOpt.isPresent()) {
-                    var bestFlight = bestFlightOpt.orElseThrow();
-                    // FIXME: weather agencies for loop
-                    try (var weatherScope = StructuredTaskScope.<Weather, Weather>open(
-                            StructuredTaskScope.Joiner.anySuccessfulResultOrThrow())) {
-
-                        WeatherAgencies.weatherAgencies().stream()
-                                .map(weatherAgency ->
-                                        weatherScope.fork(
-                                                weatherQuery(WEATHER_SERVER_URI, weatherAgency, destinationCity))
-                                )
-                                .toList();
-
-                        var weather = weatherScope.join();
-
-                        var pricedTravelWithWeather = new PricedTravelWithWeatherDTO(bestFlight, weather);
-                        res.status(Status.OK_200).send(pricedTravelWithWeather);
-
-                    } catch (InterruptedException _) {
-                        var errorMessage = new WeatherErrorMessage("Weather not available");
-                        var pricedTravelNoWeather = new PricedTravelNoWeatherDTO(bestFlight, errorMessage);
-                        res.status(Status.OK_200).send(pricedTravelNoWeather);
-                    }
-                    // FIXME: Weather scope end
-                } else {
-                    var errorMessage = new CompanyErrorMessage("No flight available", errorCompanies.toArray(Company[]::new));
-                    res.status(Status.NOT_FOUND_404).send(errorMessage);
-                }
+                // then analyze the results
+                var companyResponse = companyResponseSubTask.get();
+                var weatherResponse = switch(weatherResponseSubTask.state()) {
+                    case SUCCESS ->
+                            weatherResponseSubTask.get();
+                    case UNAVAILABLE ->
+                            new WeatherResponse.WeatherTimeout("Weather forecast took too long");
+                    case FAILED ->
+                            throw new IllegalStateException("Got a weather subtask in FAILED state");
+                };
+                var travelResponse = buildResponse(companyResponse, weatherResponse);
+                res.status(Status.OK_200).send(travelResponse);
             }
-            // FIXME: Company scope end
         });
         // FIXME: Handler end
 

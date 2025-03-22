@@ -5,13 +5,16 @@ import org.paumard.server.travel.model.flight.Flight;
 
 import java.util.Objects;
 
-public sealed interface CompanyResponse {
+public sealed interface CompanyResponse
+        extends CompanyWeatherResponse {
 
     sealed interface Priced extends CompanyResponse {
         int price();
     }
 
-    sealed interface Failed extends CompanyResponse {}
+    sealed interface Failed extends CompanyResponse {
+        String message();
+    }
     
     record PricedSimpleFlight(
             Company company, Flight.SimpleFlight simpleFlight, int price)
@@ -43,6 +46,13 @@ public sealed interface CompanyResponse {
             implements Failed {
         public Error {
             Objects.requireNonNull(company);
+            Objects.requireNonNull(message);
+        }
+    }
+
+    record NoFlightFromAnyCompany(String message)
+            implements Failed {
+        public NoFlightFromAnyCompany {
             Objects.requireNonNull(message);
         }
     }
