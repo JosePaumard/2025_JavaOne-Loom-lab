@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Travel Booking Demo</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-T3c6CoIi6uLrA9TneNEoa7RxnatzjcDSCmG1MXxSR1GAsXEV/Dwwykc2MPK8M2HN" crossorigin="anonymous">
+    <script>
+        window.onload = async () => {
+
+            fetch("/cities", {
+                method: 'GET'
+            })
+                .then(response => response.json())
+                .then(data => {
+                    let cityTable = document.getElementById("cities");
+                    let body = cityTable.createTBody();
+                    tr = document.createElement("tr");
+                    tr.className = "table-striped";
+                    for (id in data) {
+                        let td = document.createElement("td");
+                        td.innerHTML = data[id].name;
+                        tr.append(td);
+                        if (id > 0 && id % 3 == 2) {
+                            body.append(tr);
+                            tr = document.createElement("tr");
+                            tr.className = "table-striped";
+                        }
+                    }
+                })
+                .catch(console.error)
+
+
+            let to = document.getElementById("to");
+            let from = document.getElementById("from");
+            let fly = document.getElementById("flightButton");
+
+            fly.onclick = async () => {
+                let destinationCity = to.value;
+                let departureCity = from.value;
+                let travelRequest = {
+                    to: destinationCity,
+                    from: departureCity
+                };
+                let weatherRequest = {
+                    name: destinationCity
+                };
+                fetch("/travel", {
+                    method: 'POST',
+                    body: JSON.stringify(travelRequest),
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                })
+                    .then(response => response.json())
+                    .then(response => {
+                        if (response.message) {
+                            let errorTable = document.getElementById("error");
+                            let error = errorTable.createTBody()
+                            let tr = document.createElement("tr");
+                            tr.className = "table-striped";
+                            let td = document.createElement("td");
+                            var message =
+                                "Flight from " + from.value +
+                                " to " + to.value +
+                                " is not available from " + response.companies.map(c => c.name).join(", ")
+                            td.innerHTML = message;
+                            tr.append(td)
+                            error.append(tr)
+                        } else {
+                            let travelTable = document.getElementById("travelTable")
+                            let body = travelTable.createTBody();
+                            let tr = document.createElement("tr");
+                            tr.className = "table-striped";
+                            let addTableData = (value) => {
+                                let td = document.createElement("td");
+                                td.innerHTML = value;
+                                tr.append(td);
+                            };
+                            // FIXME: Displaying travels
+                            if (response.travel.travel.from) {
+                                addTableData(response.travel.travel.from.name);
+                                addTableData("-");
+                                addTableData(response.travel.travel.to.name);
+                            } else {
+                                addTableData(response.travel.travel.flight1.from.name);
+                                addTableData(response.travel.travel.flight1.to.name);
+                                addTableData(response.travel.travel.flight2.to.name);
+                            }
+                            addTableData(response.travel.price);
+                            addTableData(response.travel.company.name);
+                            if (response.weather) {
+                                addTableData(response.weather.weather);
+                                addTableData(response.weather.agency);
+                            } else {
+                                addTableData("Weather is not available");
+                            }
+                            body.append(tr);
+                        }
+                    });
+            };
+        };
+    </script>
+    <style>
+
+    </style>
+</head>
+<body>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js" integrity="sha384-C6RzsynM9kWDrMNeT87bh95OGNyZPhcTNXj1NW7RuBCsyN/o0jlpcV8Qyq46cDfL" crossorigin="anonymous"></script>
+
+<div class="container my-5">
+<h2>Where do you want to go today?</h2>
+
+<h4>Available destinations</h4>
+<table id="cities" class="table table-sm"></table>
+<hr class="my-1">
+
+<h4>Choose your travel</h4>
+<div id="travel" class="container my-5">
+    <input id="from" type="text" placeholder="Where are you flying from?"/>
+    <input id="to" type="text" placeholder="Where are you doing to?"/>
+    <button id="flightButton">Find a travel!</button>
+</div>
+
+<hr class="my-1">
+<table id="error" class="table table-sm"></table>
+
+<h4>Travels</h4>
+<table id="travelTable" class="table table-sm">
+    <tr>
+        <th>From</th>
+        <th>Through</th>
+        <th>To</th>
+        <th>Travel Price</th>
+        <th>Travel Agency</th>
+        <th>Weather</th>
+        <th>Weather Agency</th>
+    </tr>
+</table>
+</div>
+</body>
+</html>

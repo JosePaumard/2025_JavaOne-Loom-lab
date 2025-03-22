@@ -1,0 +1,7 @@
+# Flight Companies
+# Name, pricing strategy, flight availability rate, tag, average response time in ms, dispersion
+Air Penguin 90 70 air-penguin 100 20
+Norwegian Parrots 100 80 norwegian-parrots 90 20
+Gamma Airlines 110 90 gamma 80 20
+Crusty Albatross 100 95 crusty-albatros 80 10
+Diamond Airline 120 100 diamond 70 20

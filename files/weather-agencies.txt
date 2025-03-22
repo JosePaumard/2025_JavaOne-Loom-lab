@@ -1,0 +1,5 @@
+# Weather agencies
+# Name, tag, average response time in ms, dispersion
+Global Weather, global, 100, 20
+Star Weather, star, 80, 10
+Planet Weather, planet, 90, 25

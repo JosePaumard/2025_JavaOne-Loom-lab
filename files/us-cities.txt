@@ -1,0 +1,20 @@
+# Cities
+ 1 Atlanta
+ 2 Austin
+ 3 Boston
+ 4 Chicago
+ 5 Dallas
+ 6 Denver
+ 7 Houston
+ 8 Las Vegas
+ 9 Miami
+10 New York
+11 Philadelphia
+12 Phoenix
+13 Los Angeles
+14 San Antonio
+15 San Diego
+16 San Francisco
+17 Seattle
+18 Salt Lake City
+

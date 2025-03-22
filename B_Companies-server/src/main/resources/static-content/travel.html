@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Travel Booking Demo</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet"
+          integrity="sha384-T3c6CoIi6uLrA9TneNEoa7RxnatzjcDSCmG1MXxSR1GAsXEV/Dwwykc2MPK8M2HN" crossorigin="anonymous">
+    <script>
+        window.onload = async () => {
+
+            function add(cityLabel, data, citiesTableBody) {
+                let td = document.createElement("td");
+                let a = document.createElement("a");
+                a.href = "#";
+                a.className = "list-group-item list-group-item-action";
+                a.onpointerenter = e => {
+                    a.className = "list-group-item list-group-item-action active";
+                };
+                a.onpointerleave = e => {
+                    a.className = "list-group-item list-group-item-action";
+                };
+                a.onclick = e => {
+                    cityLabel.textContent = data.name;
+                };
+                a.textContent = data.name;
+                td.append(a);
+                tr.append(td);
+                if (id > 0 && id % 3 == 2) {
+                    citiesTableBody.append(tr);
+                    tr = document.createElement("tr");
+                    tr.className = "table-striped";
+                }
+            }
+
+            fetch("/cities", {
+                method: 'GET'
+            })
+                .then(response => response.json())
+                .then(data => {
+                    tr = document.createElement("tr");
+                    tr.className = "table-striped";
+
+                    let departureTable = document.getElementById("departureCities");
+                    let departureTableBody = departureTable.createTBody();
+                    let departureLabel = document.getElementById("departureCity");
+
+                    tr = document.createElement("tr");
+                    tr.className = "table-striped";
+
+                    let destinationTable = document.getElementById("destinationCities");
+                    let destinationTableBody = destinationTable.createTBody();
+                    let destinationLabel = document.getElementById("destinationCity");
+
+                    for (id in data) {
+                        let localId = id;
+                        add(departureLabel, data[localId], departureTableBody);
+                    }
+                    for (id in data) {
+                        let localId = id;
+                        add(destinationLabel, data[localId], destinationTableBody);
+                    }
+                })
+                .catch(console.error)
+
+            fetch("/companies", {
+                method: 'GET'
+            })
+                .then(response => response.json())
+                .then(data => {
+                    let companyButtons = document.getElementById("companies");
+                    for (id in data) {
+                        let companyName = data[id].name;
+                        let companyTag = data[id].tag;
+                        let div = document.createElement("div");
+                        div.className = "col p-1";
+                        let button = document.createElement("button");
+                        button.textContent = "Get the flight from " + companyName;
+                        button.className = "btn btn-info";
+                        button.onclick = async () => {
+                            // let cityLabel = document.getElementById("city");
+                            let departureCity = document.getElementById("departureCity").textContent;
+                            let destinationCity = document.getElementById("destinationCity").textContent;
+                            let travelRequest = {
+                                from: { name: departureCity},
+                                to: {name: destinationCity}
+                            };
+                            fetch("/company/" + companyTag, {
+                                method: 'POST',
+                                body: JSON.stringify(travelRequest),
+                                headers: {
+                                    'Content-Type': 'application/json'
+                                }
+                            })
+                                .then(response => response.json())
+                                .then(response => {
+                                    if (response.message) {
+                                        let errorTable = document.getElementById("error");
+                                        let error = errorTable.createTBody()
+                                        let tr = document.createElement("tr");
+                                        tr.className = "table-striped";
+                                        let td = document.createElement("td");
+                                        let message = response.message;
+                                            // "Flight from " + departureCity +
+                                            // " to " + destinationCity +
+                                            // " is not possible with " + companyName;
+                                        td.innerHTML = message;
+                                        tr.append(td)
+                                        error.append(tr)
+                                    } else {
+                                        let travelTable = document.getElementById("travelTable")
+                                        let body = travelTable.createTBody();
+                                        let tr = document.createElement("tr");
+                                        tr.className = "table-striped";
+                                        let addTableData = (value) => {
+                                            let td = document.createElement("td");
+                                            td.innerHTML = value;
+                                            tr.append(td);
+                                        };
+                                        addTableData(companyName);
+                                        if (response.flight) {
+                                            let fromCity = response.flight.from.name;
+                                            let toCity = response.flight.to.name;
+                                            addTableData(fromCity);
+                                            addTableData(toCity);
+                                            addTableData("");
+                                        } else {
+                                            let fromCity = response.multilegFlight.from.name;
+                                            let toCity = response.multilegFlight.to.name;
+                                            let viaCity = response.multilegFlight.via.name;
+                                            addTableData(fromCity);
+                                            addTableData(toCity);
+                                            addTableData(viaCity);
+                                        }
+                                        let price = response.price;
+                                        addTableData(price);
+                                        body.append(tr);
+                                    }
+                                });
+                        }
+                        div.append(button);
+                        companyButtons.append(div);
+                    }
+                })
+                .catch(console.error)
+        }
+    </script>
+    <style>
+
+    </style>
+</head>
+<body>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"
+        integrity="sha384-C6RzsynM9kWDrMNeT87bh95OGNyZPhcTNXj1NW7RuBCsyN/o0jlpcV8Qyq46cDfL"
+        crossorigin="anonymous"></script>
+
+<div class="container my-5">
+    <h2>Where do you want to go to today?</h2>
+
+    <h4>Choose your city of departure</h4>
+    <div class="list-group">
+        <table id="departureCities" class="table table-sm"></table>
+    </div>
+    <hr class="my-1">
+
+    <h4>Choose your city of destination</h4>
+    <div class="list-group">
+        <table id="destinationCities" class="table table-sm"></table>
+    </div>
+    <hr class="my-1">
+
+    <h4>Travel</h4>
+    <table class="table table-sm">
+        <tr>
+            <th>From</th>
+            <th>To</th>
+        </tr>
+        <tr>
+            <td><label id="departureCity" type="text">Choose a city of departure</label></td>
+            <td><label id="destinationCity" type="text">Choose a city of destination</label></td>
+        </tr>
+    </table>
+
+    <table id="error" class="table table-sm"></table>
+
+    <div id="companies" class="container my-5">
+    </div>
+
+    <h4>Travel</h4>
+    <table id="travelTable" class="table table-sm">
+        <tr>
+            <th>Company</th>
+            <th>Departure</th>
+            <th>Destination</th>
+            <th>Via</th>
+            <th>Price</th>
+        </tr>
+    </table>
+</div>
+</body>
+</html>
