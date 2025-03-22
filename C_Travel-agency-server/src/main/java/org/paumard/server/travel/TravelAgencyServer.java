@@ -36,6 +36,8 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Properties;
 import java.util.concurrent.Callable;
+import java.util.concurrent.StructuredTaskScope;
+import java.util.stream.Collectors;
 
 public class TravelAgencyServer {
 
@@ -103,55 +105,75 @@ public class TravelAgencyServer {
             // FIXME: Extracting the requested flight
             var queryFlight = queriedFlightFrom(req);
             var destinationCity = queryFlight.to();
-            var companies = Companies.companies();
-            var companyPricedTravels = new ArrayList<CompanyResponse.Priced>();
-            var errorCompanies = new ArrayList<Company>();
             // FIXME: Company for loop
-            for (var company : companies) {
-                var task = companyQuery(COMPANY_SERVER_URI, company, queryFlight);
-                var companyResponse = task.call();
-                switch (companyResponse) {
-                    case CompanyResponse.Priced priced -> companyPricedTravels.add(priced);
-                    case CompanyResponse.Failed _ -> errorCompanies.add(company);
-                }
-            }
-            // FIXME: best flight
-            var bestFlightOpt = companyPricedTravels.stream()
-                    .min(Comparator.comparingInt(CompanyResponse.Priced::price));
-            if (bestFlightOpt.isPresent()) {
-                var bestFlight = bestFlightOpt.orElseThrow();
-                var weathers = new ArrayList<Weather>();
-                var errorWeatherAgencies = new ArrayList<WeatherAgency>();
-                // FIXME: weather agencies for loop
-                for (var weatherAgency : WeatherAgencies.weatherAgencies()) {
-                    try (var response = WebClient.builder()
-                            .baseUri(WEATHER_SERVER_URI).build()
-                            .post("/weather/" + weatherAgency.tag())
-                            .submit(destinationCity);) {
+            try (var companyScope = StructuredTaskScope.<CompanyResponse>open()) {
+                record CompanyTask(Company company, StructuredTaskScope.Subtask<CompanyResponse> task) {}
 
-                        if (response.status() == Status.OK_200) {
-                            var weather = response.as(Weather.class);
-                            weathers.add(weather);
-                        } else {
-                            errorWeatherAgencies.add(weatherAgency);
+                var companySubtasks = Companies.companies()
+                        .stream()
+                        .map(company -> new CompanyTask(
+                                company,
+                                companyScope.fork(companyQuery(COMPANY_SERVER_URI, company, queryFlight))))
+                        .toList();
+
+                companyScope.join();
+
+                var map = companySubtasks.stream()
+                        .collect(
+                                Collectors.partitioningBy(
+                                        e -> e.task().state() == StructuredTaskScope.Subtask.State.SUCCESS &&
+                                             e.task().get() instanceof CompanyResponse.Priced
+                                )
+                        );
+
+                var companyPricedTravels =
+                        map.get(true).stream()
+                                .map(CompanyTask::task)
+                                .map(StructuredTaskScope.Subtask::get)
+                                .map(CompanyResponse.Priced.class::cast)
+                                .toList();
+
+                var errorCompanies =
+                        map.get(false).stream()
+                                .map(CompanyTask::company)
+                                .toList();
+                // FIXME: best flight
+                var bestFlightOpt = companyPricedTravels.stream()
+                        .min(Comparator.comparingInt(CompanyResponse.Priced::price));
+                if (bestFlightOpt.isPresent()) {
+                    var bestFlight = bestFlightOpt.orElseThrow();
+                    var weathers = new ArrayList<Weather>();
+                    var errorWeatherAgencies = new ArrayList<WeatherAgency>();
+                    // FIXME: weather agencies for loop
+                    for (var weatherAgency : WeatherAgencies.weatherAgencies()) {
+                        try (var response = WebClient.builder()
+                                .baseUri(WEATHER_SERVER_URI).build()
+                                .post("/weather/" + weatherAgency.tag())
+                                .submit(destinationCity);) {
+
+                            if (response.status() == Status.OK_200) {
+                                var weather = response.as(Weather.class);
+                                weathers.add(weather);
+                            } else {
+                                errorWeatherAgencies.add(weatherAgency);
+                            }
                         }
                     }
-                }
-                if (!weathers.isEmpty()) {
-                    var weather = weathers.getFirst();
-                    var pricedTravelWithWeather = new PricedTravelWithWeatherDTO(bestFlight, weather);
-                    res.status(Status.OK_200).send(pricedTravelWithWeather);
+                    if (!weathers.isEmpty()) {
+                        var weather = weathers.getFirst();
+                        var pricedTravelWithWeather = new PricedTravelWithWeatherDTO(bestFlight, weather);
+                        res.status(Status.OK_200).send(pricedTravelWithWeather);
+                    } else {
+                        var errorMessage = new WeatherErrorMessage("Weather not available");
+                        var pricedTravelNoWeather = new PricedTravelNoWeatherDTO(bestFlight, errorMessage);
+                        res.status(Status.NOT_FOUND_404).send(pricedTravelNoWeather);
+                    }
                 } else {
-                    var errorMessage = new WeatherErrorMessage("Weather not available");
-                    var pricedTravelNoWeather = new PricedTravelNoWeatherDTO(bestFlight, errorMessage);
-                    res.status(Status.NOT_FOUND_404).send(pricedTravelNoWeather);
+                    var errorMessage = new CompanyErrorMessage("No flight available", errorCompanies.toArray(Company[]::new));
+                    res.status(Status.NOT_FOUND_404).send(errorMessage);
                 }
-                // FIXME: Weather scope end
-            } else {
-                var errorMessage = new CompanyErrorMessage("No flight available", errorCompanies.toArray(Company[]::new));
-                res.status(Status.NOT_FOUND_404).send(errorMessage);
             }
-            // FIXME: Company scope end
+            // FIXME: Scope end
         });
         // FIXME: Handler end
 
