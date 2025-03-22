@@ -106,7 +106,9 @@ public class TravelAgencyServer {
             var queryFlight = queriedFlightFrom(req);
             var destinationCity = queryFlight.to();
             // FIXME: Company for loop
-            try (var companyScope = StructuredTaskScope.<CompanyResponse>open()) {
+            try (var companyScope =
+                         StructuredTaskScope.<CompanyResponse, Void>open(
+                                 StructuredTaskScope.Joiner.awaitAll())) {
                 record CompanyTask(Company company, StructuredTaskScope.Subtask<CompanyResponse> task) {}
 
                 var companySubtasks = Companies.companies()
@@ -168,12 +170,13 @@ public class TravelAgencyServer {
                         var pricedTravelNoWeather = new PricedTravelNoWeatherDTO(bestFlight, errorMessage);
                         res.status(Status.NOT_FOUND_404).send(pricedTravelNoWeather);
                     }
+                    // FIXME: Weather scope end
                 } else {
                     var errorMessage = new CompanyErrorMessage("No flight available", errorCompanies.toArray(Company[]::new));
                     res.status(Status.NOT_FOUND_404).send(errorMessage);
                 }
             }
-            // FIXME: Scope end
+            // FIXME: Company scope end
         });
         // FIXME: Handler end
 
