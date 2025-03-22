@@ -32,7 +32,6 @@ import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Properties;
 import java.util.concurrent.Callable;
@@ -75,6 +74,23 @@ public class TravelAgencyServer {
                     case CompanyServerResponse.Error(String message) ->
                             new CompanyResponse.Error(company, message);
                 };
+            }
+        };
+    }
+
+    static Callable<Weather>
+    weatherQuery(ClientUri clientURI, WeatherAgency agency, City city) {
+        return () -> {
+            try (var response = WebClient.builder()
+                    .baseUri(clientURI).build()
+                    .post("/weather/" + agency.tag())
+                    .submit(city)) {
+                if (response.status() == Status.OK_200) {
+                    var weather = response.as(Weather.class);
+                    return weather;
+                } else {
+                    throw new IllegalStateException("No weather from " + agency.name());
+                }
             }
         };
     }
@@ -144,31 +160,26 @@ public class TravelAgencyServer {
                         .min(Comparator.comparingInt(CompanyResponse.Priced::price));
                 if (bestFlightOpt.isPresent()) {
                     var bestFlight = bestFlightOpt.orElseThrow();
-                    var weathers = new ArrayList<Weather>();
-                    var errorWeatherAgencies = new ArrayList<WeatherAgency>();
                     // FIXME: weather agencies for loop
-                    for (var weatherAgency : WeatherAgencies.weatherAgencies()) {
-                        try (var response = WebClient.builder()
-                                .baseUri(WEATHER_SERVER_URI).build()
-                                .post("/weather/" + weatherAgency.tag())
-                                .submit(destinationCity);) {
+                    try (var weatherScope = StructuredTaskScope.<Weather, Weather>open(
+                            StructuredTaskScope.Joiner.anySuccessfulResultOrThrow())) {
 
-                            if (response.status() == Status.OK_200) {
-                                var weather = response.as(Weather.class);
-                                weathers.add(weather);
-                            } else {
-                                errorWeatherAgencies.add(weatherAgency);
-                            }
-                        }
-                    }
-                    if (!weathers.isEmpty()) {
-                        var weather = weathers.getFirst();
+                        WeatherAgencies.weatherAgencies().stream()
+                                .map(weatherAgency ->
+                                        weatherScope.fork(
+                                                weatherQuery(WEATHER_SERVER_URI, weatherAgency, destinationCity))
+                                )
+                                .toList();
+
+                        var weather = weatherScope.join();
+
                         var pricedTravelWithWeather = new PricedTravelWithWeatherDTO(bestFlight, weather);
                         res.status(Status.OK_200).send(pricedTravelWithWeather);
-                    } else {
+
+                    } catch (InterruptedException _) {
                         var errorMessage = new WeatherErrorMessage("Weather not available");
                         var pricedTravelNoWeather = new PricedTravelNoWeatherDTO(bestFlight, errorMessage);
-                        res.status(Status.NOT_FOUND_404).send(pricedTravelNoWeather);
+                        res.status(Status.OK_200).send(pricedTravelNoWeather);
                     }
                     // FIXME: Weather scope end
                 } else {
